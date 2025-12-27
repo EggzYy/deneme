@@ -5,6 +5,243 @@ const auth = require('../middleware/auth');
 const HealthProfile = require('../models/HealthProfile');
 const HealthData = require('../models/HealthData');
 
+const mapLifestyleToClient = (lifestyle = {}) => {
+  const smokingStatus = lifestyle.smoking?.status || 'never';
+
+  const alcoholMap = {
+    never: 'none',
+    rarely: 'occasional',
+    socially: 'moderate',
+    regularly: 'moderate',
+    heavily: 'heavy'
+  };
+
+  const exerciseMap = {
+    never: 'sedentary',
+    rarely: 'light',
+    '1-2-times-week': 'light',
+    '3-4-times-week': 'moderate',
+    daily: 'active'
+  };
+
+  const dietMap = {
+    regular: 'balanced',
+    vegetarian: 'vegetarian',
+    vegan: 'vegan',
+    keto: 'keto',
+    paleo: 'other',
+    mediterranean: 'mediterranean',
+    other: 'other'
+  };
+
+  return {
+    smokingStatus,
+    alcoholConsumption: alcoholMap[lifestyle.alcohol?.consumption] || 'none',
+    exerciseFrequency: exerciseMap[lifestyle.exercise?.frequency] || 'moderate',
+    dietType: dietMap[lifestyle.diet?.type] || 'balanced',
+    sleepHours: lifestyle.sleep?.hoursPerNight ?? 7
+  };
+};
+
+const applyClientLifestyle = (healthProfile, clientLifestyle = {}) => {
+  const alcoholMap = {
+    none: 'never',
+    occasional: 'rarely',
+    moderate: 'regularly',
+    heavy: 'heavily'
+  };
+
+  const exerciseMap = {
+    sedentary: 'never',
+    light: '1-2-times-week',
+    moderate: '3-4-times-week',
+    active: 'daily'
+  };
+
+  const dietMap = {
+    balanced: 'regular',
+    vegetarian: 'vegetarian',
+    vegan: 'vegan',
+    keto: 'keto',
+    mediterranean: 'mediterranean',
+    other: 'other'
+  };
+
+  if (!healthProfile.lifestyle) healthProfile.lifestyle = {};
+  if (!healthProfile.lifestyle.smoking) healthProfile.lifestyle.smoking = {};
+  if (!healthProfile.lifestyle.alcohol) healthProfile.lifestyle.alcohol = {};
+  if (!healthProfile.lifestyle.exercise) healthProfile.lifestyle.exercise = {};
+  if (!healthProfile.lifestyle.diet) healthProfile.lifestyle.diet = {};
+  if (!healthProfile.lifestyle.sleep) healthProfile.lifestyle.sleep = {};
+
+  if (clientLifestyle.smokingStatus) {
+    healthProfile.lifestyle.smoking.status = clientLifestyle.smokingStatus;
+  }
+
+  if (clientLifestyle.alcoholConsumption) {
+    healthProfile.lifestyle.alcohol.consumption = alcoholMap[clientLifestyle.alcoholConsumption] || 'never';
+  }
+
+  if (clientLifestyle.exerciseFrequency) {
+    healthProfile.lifestyle.exercise.frequency = exerciseMap[clientLifestyle.exerciseFrequency] || 'never';
+  }
+
+  if (clientLifestyle.dietType) {
+    healthProfile.lifestyle.diet.type = dietMap[clientLifestyle.dietType] || 'regular';
+  }
+
+  if (clientLifestyle.sleepHours !== undefined) {
+    const hours = Number(clientLifestyle.sleepHours);
+    if (!Number.isNaN(hours)) {
+      healthProfile.lifestyle.sleep.hoursPerNight = hours;
+    }
+  }
+};
+
+const toClientProfile = (healthProfile) => {
+  const currentConditions = (healthProfile.medicalHistory || [])
+    .filter((m) => ['active', 'in-treatment'].includes(m.status))
+    .map((m) => m.condition)
+    .filter(Boolean);
+
+  return {
+    _id: healthProfile._id,
+    bloodType: healthProfile.bloodType || '',
+    height: healthProfile.vitalSigns?.height?.value ?? '',
+    weight: healthProfile.vitalSigns?.weight?.value ?? '',
+    allergies: (healthProfile.allergies || []).map((a) => ({
+      name: a.allergen,
+      severity: a.severity
+    })),
+    currentConditions,
+    lifestyle: mapLifestyleToClient(healthProfile.lifestyle)
+  };
+};
+
+// @desc    Get user's simplified health profile (for Profile page)
+// @route   GET /api/health/profile
+// @access  Private
+router.get('/profile', auth.protect, async (req, res) => {
+  try {
+    let healthProfile = await HealthProfile.findOne({ user: req.user.id });
+
+    if (!healthProfile) {
+      healthProfile = await HealthProfile.create({ user: req.user.id });
+    }
+
+    res.status(200).json({
+      success: true,
+      profile: toClientProfile(healthProfile)
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
+      error: error.message
+    });
+  }
+});
+
+const profileValidators = [
+  auth.protect,
+  body('bloodType').optional().isIn(['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-']),
+  body('height').optional().isNumeric(),
+  body('weight').optional().isNumeric(),
+  body('allergies').optional().isArray(),
+  body('currentConditions').optional().isArray(),
+  body('lifestyle').optional().isObject()
+];
+
+const upsertProfileHandler = async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    let healthProfile = await HealthProfile.findOne({ user: req.user.id });
+
+    if (!healthProfile) {
+      healthProfile = await HealthProfile.create({ user: req.user.id });
+    }
+
+    const { bloodType, height, weight, allergies, currentConditions, lifestyle } = req.body;
+
+    if (bloodType !== undefined) {
+      healthProfile.bloodType = bloodType;
+    }
+
+    if (height !== undefined) {
+      const value = Number(height);
+      if (!Number.isNaN(value)) {
+        if (!healthProfile.vitalSigns) healthProfile.vitalSigns = {};
+        healthProfile.vitalSigns.height = { value, unit: 'cm' };
+      }
+    }
+
+    if (weight !== undefined) {
+      const value = Number(weight);
+      if (!Number.isNaN(value)) {
+        if (!healthProfile.vitalSigns) healthProfile.vitalSigns = {};
+        healthProfile.vitalSigns.weight = { value, unit: 'kg', recordedAt: new Date() };
+      }
+    }
+
+    if (Array.isArray(allergies)) {
+      healthProfile.allergies = allergies
+        .map((a) => ({
+          allergen: a.allergen || a.name,
+          severity: a.severity || 'moderate'
+        }))
+        .filter((a) => a.allergen);
+    }
+
+    if (Array.isArray(currentConditions)) {
+      const preserved = (healthProfile.medicalHistory || []).filter(
+        (m) => !['active', 'in-treatment'].includes(m.status)
+      );
+
+      const next = currentConditions
+        .map((c) => String(c).trim())
+        .filter(Boolean)
+        .map((condition) => ({ condition, status: 'active' }));
+
+      healthProfile.medicalHistory = [...preserved, ...next];
+    }
+
+    if (lifestyle && typeof lifestyle === 'object') {
+      applyClientLifestyle(healthProfile, lifestyle);
+    }
+
+    await healthProfile.save();
+
+    res.status(200).json({
+      success: true,
+      profile: toClientProfile(healthProfile)
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Create user's simplified health profile
+// @route   POST /api/health/profile
+// @access  Private
+router.post('/profile', profileValidators, upsertProfileHandler);
+
+// @desc    Update user's simplified health profile
+// @route   PUT /api/health/profile
+// @access  Private
+router.put('/profile', profileValidators, upsertProfileHandler);
+
 // @desc    Add health data entry
 // @route   POST /api/health/data
 // @access  Private
@@ -426,6 +663,112 @@ router.get('/insights', auth.protect, async (req, res) => {
       insights,
       generatedAt: new Date()
     });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
+      error: error.message
+    });
+  }
+});
+
+// @desc    Export user's health data
+// @route   GET /api/health/export
+// @access  Private
+router.get('/export', auth.protect, async (req, res) => {
+  try {
+    const { format = 'csv', startDate, endDate, dataType } = req.query;
+
+    const query = { user: req.user.id };
+
+    if (dataType) {
+      query.dataType = dataType;
+    }
+
+    if (startDate || endDate) {
+      query.recordedAt = {};
+      if (startDate) query.recordedAt.$gte = new Date(startDate);
+      if (endDate) query.recordedAt.$lte = new Date(endDate);
+    }
+
+    const healthData = await HealthData.find(query).sort({ recordedAt: 1 });
+
+    if (format === 'json') {
+      const payload = JSON.stringify(
+        {
+          exportedAt: new Date(),
+          count: healthData.length,
+          data: healthData
+        },
+        null,
+        2
+      );
+
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', 'attachment; filename="health-data.json"');
+      return res.status(200).send(payload);
+    }
+
+    const csvEscape = (value) => {
+      if (value === undefined || value === null) return '';
+      const str = String(value);
+      if (/[",\n]/.test(str)) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    };
+
+    const headers = [
+      'recordedAt',
+      'dataType',
+      'source',
+      'heartRateBpm',
+      'systolic',
+      'diastolic',
+      'weight',
+      'weightUnit',
+      'glucose',
+      'glucoseUnit',
+      'sleepMinutes',
+      'moodScore',
+      'userNotes'
+    ];
+
+    const rows = healthData.map((entry) => {
+      const heartRate = entry.vitalSigns?.heartRate?.value ?? '';
+      const systolic = entry.vitalSigns?.bloodPressure?.systolic ?? '';
+      const diastolic = entry.vitalSigns?.bloodPressure?.diastolic ?? '';
+      const weight = entry.measurements?.weight?.value ?? '';
+      const weightUnit = entry.measurements?.weight?.unit ?? '';
+      const glucose = entry.glucose?.value ?? '';
+      const glucoseUnit = entry.glucose?.unit ?? '';
+      const sleepMinutes = entry.sleep?.duration ?? '';
+      const moodScore = entry.mentalHealth?.mood?.score ?? '';
+
+      return [
+        entry.recordedAt?.toISOString?.() ? entry.recordedAt.toISOString() : entry.recordedAt,
+        entry.dataType,
+        entry.source,
+        heartRate,
+        systolic,
+        diastolic,
+        weight,
+        weightUnit,
+        glucose,
+        glucoseUnit,
+        sleepMinutes,
+        moodScore,
+        entry.userNotes || ''
+      ]
+        .map(csvEscape)
+        .join(',');
+    });
+
+    const csv = [headers.join(','), ...rows].join('\n');
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="health-data.csv"');
+    return res.status(200).send(csv);
   } catch (error) {
     res.status(500).json({
       success: false,
