@@ -1,85 +1,113 @@
 import api from './authService';
 
+const buildParams = (filters = {}) => {
+  const params = new URLSearchParams();
+
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return;
+    params.append(key, value);
+  });
+
+  return params;
+};
+
 export const healthService = {
   // Health Profile Management
+  // Note: This endpoint returns a simplified profile payload used by the Profile page.
   createHealthProfile: (data) => api.post('/health/profile', data),
   getHealthProfile: () => api.get('/health/profile'),
   updateHealthProfile: (data) => api.put('/health/profile', data),
-  
+
   // Health Data Management
   addHealthData: (data) => api.post('/health/data', data),
   getHealthData: (filters = {}) => {
-    const params = new URLSearchParams();
-    if (filters.startDate) params.append('startDate', filters.startDate);
-    if (filters.endDate) params.append('endDate', filters.endDate);
-    if (filters.dataType) params.append('dataType', filters.dataType);
-    if (filters.limit) params.append('limit', filters.limit);
-    if (filters.offset) params.append('offset', filters.offset);
-    
-    return api.get(`/health/data?${params.toString()}`);
+    const { offset, page, limit, ...rest } = filters;
+
+    // Backend supports page-based pagination. If offset is provided, convert to page.
+    const resolvedLimit = limit ? Number(limit) : undefined;
+    const resolvedPage = page
+      ? Number(page)
+      : offset !== undefined && resolvedLimit
+        ? Math.floor(Number(offset) / resolvedLimit) + 1
+        : undefined;
+
+    const params = buildParams({ ...rest, limit: resolvedLimit, page: resolvedPage });
+    const query = params.toString();
+
+    return api.get(`/health/data${query ? `?${query}` : ''}`);
   },
   getHealthDataById: (id) => api.get(`/health/data/${id}`),
   updateHealthData: (id, data) => api.put(`/health/data/${id}`, data),
   deleteHealthData: (id) => api.delete(`/health/data/${id}`),
-  
+
   // Health Trends and Analytics
-  getHealthTrends: (type, dateRange = {}) => {
-    const params = new URLSearchParams({ type });
-    if (dateRange.startDate) params.append('startDate', dateRange.startDate);
-    if (dateRange.endDate) params.append('endDate', dateRange.endDate);
-    
-    return api.get(`/health/trends?${params.toString()}`);
+  getHealthTrends: ({ metric, period } = {}) => {
+    const params = buildParams({ metric, period });
+    const query = params.toString();
+    return api.get(`/health/trends${query ? `?${query}` : ''}`);
   },
-  
+
   // Health Insights
   getHealthInsights: () => api.get('/health/insights'),
-  getHealthScore: () => api.get('/health/score'),
-  
+
+  // Health score is implemented in analytics (shared calculation)
+  getHealthScore: () => api.get('/analytics/health-score'),
+
   // Data Export
-  exportHealthData: (format = 'pdf') => {
-    return api.get(`/health/export?format=${format}`, {
+  exportHealthData: (format = 'csv', filters = {}) => {
+    const params = buildParams({ format, ...filters });
+    return api.get(`/health/export?${params.toString()}`, {
       responseType: 'blob'
     });
   },
-  
-  // Vital Signs
-  addVitalSigns: (data) => api.post('/health/vitals', data),
+
+  // Convenience wrappers around /health/data
+  addVitalSigns: ({ recordedAt, ...vitalSigns }) => {
+    return api.post('/health/data', {
+      dataType: 'vital-signs',
+      source: 'manual',
+      recordedAt,
+      vitalSigns
+    });
+  },
   getVitalSigns: (dateRange = {}) => {
-    const params = new URLSearchParams();
-    if (dateRange.startDate) params.append('startDate', dateRange.startDate);
-    if (dateRange.endDate) params.append('endDate', dateRange.endDate);
-    
-    return api.get(`/health/vitals?${params.toString()}`);
+    return healthService.getHealthData({ dataType: 'vital-signs', ...dateRange });
   },
-  
-  // Activity Data
-  addActivity: (data) => api.post('/health/activity', data),
+
+  addActivity: ({ recordedAt, ...activity }) => {
+    return api.post('/health/data', {
+      dataType: 'activity',
+      source: 'manual',
+      recordedAt,
+      activity
+    });
+  },
   getActivity: (dateRange = {}) => {
-    const params = new URLSearchParams();
-    if (dateRange.startDate) params.append('startDate', dateRange.startDate);
-    if (dateRange.endDate) params.append('endDate', dateRange.endDate);
-    
-    return api.get(`/health/activity?${params.toString()}`);
+    return healthService.getHealthData({ dataType: 'activity', ...dateRange });
   },
-  
-  // Sleep Data
-  addSleep: (data) => api.post('/health/sleep', data),
+
+  addSleep: ({ recordedAt, ...sleep }) => {
+    return api.post('/health/data', {
+      dataType: 'sleep',
+      source: 'manual',
+      recordedAt,
+      sleep
+    });
+  },
   getSleep: (dateRange = {}) => {
-    const params = new URLSearchParams();
-    if (dateRange.startDate) params.append('startDate', dateRange.startDate);
-    if (dateRange.endDate) params.append('endDate', dateRange.endDate);
-    
-    return api.get(`/health/sleep?${params.toString()}`);
+    return healthService.getHealthData({ dataType: 'sleep', ...dateRange });
   },
-  
-  // Mental Health
-  addMentalHealth: (data) => api.post('/health/mental-health', data),
+
+  addMentalHealth: ({ recordedAt, ...mentalHealth }) => {
+    return api.post('/health/data', {
+      dataType: 'mental-health',
+      source: 'manual',
+      recordedAt,
+      mentalHealth
+    });
+  },
   getMentalHealth: (dateRange = {}) => {
-    const params = new URLSearchParams();
-    if (dateRange.startDate) params.append('startDate', dateRange.startDate);
-    if (dateRange.endDate) params.append('endDate', dateRange.endDate);
-    
-    return api.get(`/health/mental-health?${params.toString()}`);
+    return healthService.getHealthData({ dataType: 'mental-health', ...dateRange });
   }
 };
 

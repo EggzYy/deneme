@@ -6,6 +6,12 @@ const healthProfileSchema = new mongoose.Schema({
     ref: 'User',
     required: true
   },
+
+  // Basic Health Info
+  bloodType: {
+    type: String,
+    enum: ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-']
+  },
   
   // Medical History
   medicalHistory: [{
